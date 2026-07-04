@@ -3,6 +3,7 @@ import os
 import json
 import logging
 from typing import List, Dict, Optional
+from unittest import result
 from firecrawl import FirecrawlApp
 from urllib.parse import urlparse
 from datetime import datetime
@@ -73,8 +74,52 @@ def scrape_websites(
     #     }
     # }
     metadata_file = os.path.join(path, "scraped_metadata.json")
-
+    
     # continue your solution here ...
+    metadata = {}
+    successful_scrapes = []
+    scraped_metadata = {}
+    
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+    
+    for provider_name, url in websites.items():
+        logger.info(f"Scraping {provider_name} at {url}")
+        try:
+            scrape_result = app.scrape(url, formats=formats).model_dump()
+            scraped_at = datetime.utcnow().isoformat()
+            domain = urlparse(url).netloc
+            
+            if scrape_result.get('success', True):
+                file_name = f"{provider_name}_{format}.txt"
+                with open(f"{SCRAPE_DIR}/{file_name}", 'w') as f:
+                    json.dump(scrape_result, f)
+            
+                metadata = {
+                    "provider_name": provider_name,
+                    "url": url,
+                    "domain": domain,
+                    "scraped_at": scraped_at,
+                    "formats": formats,
+                    "success": True,
+                    "content_files": file_name,
+                    "title": scrape_result.get("title", ""),
+                    "description": scrape_result.get("description", "")
+                }
+            
+                successful_scrapes.append(provider_name)
+        
+        except Exception as e:
+            logger.error(f"Failed to scrape {provider_name} at {url}: {e}")
+        finally:
+            scraped_metadata[provider_name] = metadata
+            
+    with open("scraped_metadata.json", 'w') as f:
+        json.dump(scraped_metadata, f)
+
+    return successful_scrapes
+    
 
 @mcp.tool()
 def extract_scraped_info(identifier: str) -> str:
@@ -95,6 +140,31 @@ def extract_scraped_info(identifier: str) -> str:
     logger.info(f"Checking metadata file: {metadata_file}")
 
     # contine your response here ...
+    try:
+        # Load scraped metadata
+        with open(metadata_file, 'r') as f:
+            scraped_metadata = json.load(f)
+        
+        # Extract information based on the identifier
+        for provider_name, metadata in scraped_metadata.items():
+            url = metadata.get("url", "")
+            domain = metadata.get("domain", "")
+            
+            if identifier in [provider_name, url, domain]:
+                result = metadata.copy()
+                
+                if result.get("content_files"):
+                    result["content"] = {}
+                    for format, file_name in result["content_files"].items():
+                        content_file_path = os.path.join(SCRAPE_DIR, file_name)
+                        with open(content_file_path, 'r') as f:
+                            result["content"][format] = f.read()
+                return json.dumps(result, indent=4)
+            
+    except Exception as e:
+        logger.error(f"Error occurred while extracting scraped info: {e}")
+    return f"No scraped information found for identifier: {identifier}"        
+        
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
