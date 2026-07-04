@@ -133,7 +133,7 @@ class Server:
             tool_def: ToolDefinition = {
                 "name": tool.name,
                 "description": tool.description,
-                "input_schema": tool.input_schema
+                "input_schema": tool.inputSchema
             }
             tools.append(tool_def)
         return tools
@@ -167,9 +167,10 @@ class Server:
         for attempt in range(retries + 1):
             try:
                 logging.info(f"Executing tool '{tool_name}' on server '{self.name}' (Attempt {attempt + 1}/{retries + 1})")
-                result = await self.session.execute_tool(name=tool_name, 
-                                                         arguments=arguments, 
-                                                         read_timeout=30)
+                result = await self.session.call_tool(name=tool_name, 
+                                                      arguments=arguments, 
+                                                      read_timeout_seconds=timedelta(seconds=60))
+
                 return result
             
             except Exception as e:
