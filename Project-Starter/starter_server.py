@@ -96,7 +96,7 @@ def scrape_websites(
             "domain": "",
             "scraped_at": "",
             "formats": formats,
-            "success": True,
+            "success": False,
             "content_files": {},
             "title": "",
             "description": ""}
@@ -106,7 +106,7 @@ def scrape_websites(
             domain = urlparse(url).netloc
             
             # Save the scraped content to files
-            if scrape_result.get('success', False):
+            if scrape_result.get('success', True):
                 for format in formats:
                     content = scrape_result.get(format, "")
                     file_name = f"{provider_name}_{format}.txt"
@@ -125,7 +125,6 @@ def scrape_websites(
             
                 successful_scrapes.append(provider_name)
             else:
-                metadata["success"] = False
                 logger.warning(f"Scraping failed for {provider_name} at {url}")
         
         except Exception as e:

@@ -52,6 +52,18 @@ class Configuration:
             ValueError: If configuration file is missing required fields.
         """
         # complete
+        try:
+            with open(file_path, 'r') as f:
+                config = json.load(f)
+            
+            if  "mcpServers" not in config:
+                raise ValueError("Configuration file must contain 'mcpServers' key")
+            return config
+        
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Configuration file not found: {file_path}")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in configuration file: {e}")    
 
     @property
     def anthropic_api_key(self) -> str:
@@ -86,7 +98,10 @@ class Server:
             raise ValueError("The command must be a valid string and cannot be None.")
 
         # complete params
-        server_params = StdioServerParameters()
+        server_params = StdioServerParameters(command=command,
+                                                args=self.config["args"],
+                                                env={**os.environ,** self.config["env"]} if self.config.get("env") else None,
+                                            )
         try:
             stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
             read, write = stdio_transport
@@ -109,6 +124,19 @@ class Server:
             RuntimeError: If the server is not initialized.
         """
         # complete
+        if not self.session:
+            raise RuntimeError(f"Server {self.name} is not initialized. Cannot list tools.")
+        
+        tools_response = await self.session.list_tools()
+        tools = []
+        for tool in tools_response.tools:
+            tool_def: ToolDefinition = {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema
+            }
+            tools.append(tool_def)
+        return tools
 
     async def execute_tool(
         self,
@@ -133,7 +161,23 @@ class Server:
             Exception: If tool execution fails after all retries.
         """
         # complete
-
+        if not self.session:
+            raise RuntimeError(f"Server {self.name} is not initialized. Cannot execute tool '{tool_name}'.")
+        
+        for attempt in range(retries + 1):
+            try:
+                logging.info(f"Executing tool '{tool_name}' on server '{self.name}' (Attempt {attempt + 1}/{retries + 1})")
+                result = await self.session.execute_tool(name=tool_name, 
+                                                         arguments=arguments, 
+                                                         read_timeout=30)
+                return result
+            
+            except Exception as e:
+                logging.error(f"Error executing tool '{tool_name}' on server '{self.name}': {e}")
+                if attempt == retries:
+                    logging.error(f"Failed to execute tool '{tool_name}' after {retries} retries.")
+                await asyncio.sleep(delay)
+        
     async def cleanup(self) -> None:
         """Clean up server resources."""
         async with self._cleanup_lock:
@@ -234,6 +278,35 @@ class DataExtractor:
             
             for plan in pricing_data.get("plans", []):
                 # complete
+                await self.sqlite_server.execute_tool(
+                    "write_query",
+                    {
+                    "query": f"""
+                    INSERT INTO pricing_plans (
+                        company_name,
+                        plan_name,
+                        input_tokens,
+                        output_tokens,
+                        currency,
+                        billing_period,
+                        features,
+                        limitations,
+                        source_query
+                    )
+                    VALUES (
+                        '{pricing_data.get("company_name", "Unknown")}',
+                        '{plan.get("plan_name", "Unknown Plan")}',
+                        '{plan.get("input_tokens", 0)}',
+                        '{plan.get("output_tokens", 0)}',
+                        '{plan.get("currency", "USD")}',
+                        '{plan.get("billing_period", "unknown")}',
+                        '{json.dumps(plan.get("features", []))}',
+                        '{plan.get("limitations", "")}',
+                        '{user_query}'
+                    )
+                    """
+                    },
+                                                      )
             
             logger.info(f"Stored {len(pricing_data.get('plans', []))} pricing plans")
             
@@ -265,7 +338,7 @@ class ChatSession:
         messages = [{'role': 'user', 'content': query}]
         response = self.anthropic.messages.create(
             max_tokens=2024,
-            model='<ENTER_MODEL_NAME>', 
+            model='claude-sonnet-4-5-20250929', 
             tools=self.available_tools,
             messages=messages
         )
@@ -280,8 +353,54 @@ class ChatSession:
             for content in response.content:
                 if content.type == 'text':
                     # complete
+                    full_response += content.text + "\n"
+                    assistant_content.append(content.text)
+                    if len(response.content) == 1:
+                        process_query = False
                 elif content.type == 'tool_use':
                     # complete
+                    assistant_content.append(f"Tool used: {content.tool_name} with arguments {content.arguments}")
+                    messages.append({'role': 'assistant', 'content': '\n'.join(assistant_content)})
+                    
+                    tool_id = content.id
+                    tool_name = content.name
+                    arguments = content.input
+                    
+                    # Find the server that owns this tool
+                    server = self.tool_to_server.get(tool_name)
+                    if server is None:
+                        raise ValueError(f"Tool '{tool_name}' not found.")
+                    
+                    # Execute the tool
+                    result = await server.execute_tool(tool_name, arguments)
+
+                    # Add tool result back to the conversation
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_id,
+                                    "content": str(result),
+                                }
+                            ],
+                        }
+                    )
+
+                    # Ask Claude to continue
+                    response = self.anthropic.messages.create(
+                        model="claude-sonnet-4-5-20250929",
+                        max_tokens=4096,
+                        messages=messages,
+                    )
+
+                    # Stop if Claude only returns text
+                    if (
+                        len(response.content) == 1
+                        and response.content[0].type == "text"
+                    ):
+                        process_query = False
         
         if self.data_extractor and full_response.strip():
             await self.data_extractor.extract_and_store_data(query, full_response.strip(), source_url)
@@ -324,6 +443,18 @@ class ChatSession:
             
         try:
             # complete
+            pricing = await self.sqlite_server.execute_tool("read_query", {"query": "SELECT company_name, plan_name, input_tokens, output_tokens, currency FROM pricing_plans ORDER BY created_at DESC LIMIT 5"})
+
+            print("\nRecently Stored Data:")
+            print("=" * 50)
+
+            print("\nPricing Plans:")
+            # The result.content is a list with one item, a dict, where the 'text' key holds the rows
+            for plan in pricing.content[0]["text"]:
+                print(f"{plan['company_name']}: {plan['plan_name']} - Input Token ${plan['input_tokens']}, Output Tokens ${plan['output_tokens']}")
+
+            print("=" * 50)
+           
         except Exception as e:
             print(f"Error showing data: {e}")
 
