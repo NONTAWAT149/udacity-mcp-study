@@ -1,4 +1,5 @@
 
+from fileinput import filename
 import os
 import json
 import logging
@@ -76,39 +77,56 @@ def scrape_websites(
     metadata_file = os.path.join(path, "scraped_metadata.json")
     
     # continue your solution here ...
-    metadata = {}
     successful_scrapes = []
-    scraped_metadata = {}
     
-    if os.path.exists(metadata_file):
+    # Load existing metadata if it exists
+    try:    
         with open(metadata_file, 'r') as f:
             metadata = json.load(f)
+    except FileNotFoundError:
+        scraped_metadata = {}
     
+    # Iterate over the websites and scrape them
     for provider_name, url in websites.items():
         logger.info(f"Scraping {provider_name} at {url}")
+        
+        metadata = {
+            "provider_name": provider_name,
+            "url": url,
+            "domain": "",
+            "scraped_at": "",
+            "formats": formats,
+            "success": True,
+            "content_files": {},
+            "title": "",
+            "description": ""}
         try:
             scrape_result = app.scrape(url, formats=formats).model_dump()
             scraped_at = datetime.utcnow().isoformat()
             domain = urlparse(url).netloc
             
-            if scrape_result.get('success', True):
-                file_name = f"{provider_name}_{format}.txt"
-                with open(f"{SCRAPE_DIR}/{file_name}", 'w') as f:
-                    json.dump(scrape_result, f)
+            # Save the scraped content to files
+            if scrape_result.get('success', False):
+                for format in formats:
+                    content = scrape_result.get(format, "")
+                    file_name = f"{provider_name}_{format}.txt"
+                    file_path = os.path.join(SCRAPE_DIR, file_name)
+                    
+                    with open(file_path, 'w') as f:
+                        f.write(content)
             
-                metadata = {
-                    "provider_name": provider_name,
-                    "url": url,
-                    "domain": domain,
-                    "scraped_at": scraped_at,
-                    "formats": formats,
-                    "success": True,
-                    "content_files": file_name,
-                    "title": scrape_result.get("title", ""),
-                    "description": scrape_result.get("description", "")
-                }
+                    metadata["content_files"][format] = file_name
+                
+                metadata["scraped_at"] = scraped_at
+                metadata["domain"] = domain
+                metadata["title"] = scrape_result.get("title", "")
+                metadata["description"] = scrape_result.get("description", "")
+                metadata["success"] = True
             
                 successful_scrapes.append(provider_name)
+            else:
+                metadata["success"] = False
+                logger.warning(f"Scraping failed for {provider_name} at {url}")
         
         except Exception as e:
             logger.error(f"Failed to scrape {provider_name} at {url}: {e}")
@@ -117,6 +135,8 @@ def scrape_websites(
             
     with open("scraped_metadata.json", 'w') as f:
         json.dump(scraped_metadata, f)
+    
+    logger.info(f"Scraping completed. Successful scrapes: {successful_scrapes}")
 
     return successful_scrapes
     
