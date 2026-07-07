@@ -82,7 +82,7 @@ def scrape_websites(
     # Load existing metadata if it exists
     try:    
         with open(metadata_file, 'r') as f:
-            metadata = json.load(f)
+            scraped_metadata = json.load(f)
     except FileNotFoundError:
         scraped_metadata = {}
     
@@ -132,7 +132,7 @@ def scrape_websites(
         finally:
             scraped_metadata[provider_name] = metadata
             
-    with open("scraped_metadata.json", 'w') as f:
+    with open(metadata_file, 'w') as f:
         json.dump(scraped_metadata, f)
     
     logger.info(f"Scraping completed. Successful scrapes: {successful_scrapes}")

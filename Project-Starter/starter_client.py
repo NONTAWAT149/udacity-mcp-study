@@ -8,6 +8,7 @@ from typing import Any, List, Dict, TypedDict
 from datetime import datetime, timedelta
 from pathlib import Path
 import re
+import ast
 
 from dotenv import load_dotenv
 from anthropic import Anthropic
@@ -344,67 +345,88 @@ class ChatSession:
             messages=messages
         )
         
+        print(f"DEBUG: response.content: {response}")
+        
         full_response = ""
         source_url = None
-        used_web_search = False
-        
+                
         process_query = True
         while process_query:
             assistant_content = []
             for content in response.content:
                 if content.type == 'text':
                     # complete
+                    print(f"DEBUG: text:")
+                    print(content)
                     full_response += content.text + "\n"
-                    assistant_content.append(content.text)
+                    assistant_content.append(content)
                     if len(response.content) == 1:
                         process_query = False
-                elif content.type == 'tool_use':
-                    # complete
-                    assistant_content.append(f"Tool used: {content.tool_name} with arguments {content.arguments}")
-                    messages.append({'role': 'assistant', 'content': '\n'.join(assistant_content)})
-                    
+                
+                if content.type == "tool_use":
+                    print(f"DEBUG: tool_use:")
+                    print(content)
+                    assistant_content.append(content)
+                    messages.append({
+                        "role": "assistant",
+                        "content": assistant_content
+                    })
+
                     tool_id = content.id
                     tool_name = content.name
-                    arguments = content.input
+                    tool_args = content.input
                     
-                    # Find the server that owns this tool
-                    server = self.tool_to_server.get(tool_name)
-                    if server is None:
-                        raise ValueError(f"Tool '{tool_name}' not found.")
+                    print(f"DEBUG: tool use detected: {tool_name} with args: {tool_args}")
+
+                    # find the server that owns this tool
+                    target_server = None
+                    for server in self.servers:
+                        print('server: ', server.name)
+                        server_tools = await server.list_tools()
+                        print('server tools: ', server_tools)
+                        for tool in server_tools:  
+                            print('tool: ', tool)
+                            if tool["name"] == tool_name:
+                                target_server = server
+                                print('DEBUG: target server found: ', target_server.name)
+                                break
+                            else:
+                                continue
+                        else:
+                            continue
+                        break
+
+                    result = await target_server.execute_tool(tool_name, tool_args)
                     
-                    # Execute the tool
-                    result = await server.execute_tool(tool_name, arguments)
+                    print(f"DEBUG: tool result: {result}")
 
-                    # Add tool result back to the conversation
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_id,
-                                    "content": str(result),
-                                }
-                            ],
-                        }
-                    )
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": str(result)
+                            }
+                        ]
+                    })
 
-                    # Ask Claude to continue
                     response = self.anthropic.messages.create(
-                        model="claude-sonnet-4-5-20250929",
-                        max_tokens=4096,
-                        messages=messages,
+                        model='claude-sonnet-4-5-20250929',
+                        max_tokens=1024,
+                        messages=messages
                     )
-
+                    
+                    print(f"DEBUG: new response after tool execution: {response}")
+                    full_response += response.content[0].text + "\n"
                     # Stop if Claude only returns text
-                    if (
-                        len(response.content) == 1
-                        and response.content[0].type == "text"
-                    ):
+                    if (response.content[0].type == "text"):
                         process_query = False
         
         if self.data_extractor and full_response.strip():
             await self.data_extractor.extract_and_store_data(query, full_response.strip(), source_url)
+        
+        return full_response.strip()
 
     def _extract_url_from_result(self, result_text: str) -> str | None:
         """Extract URL from tool result."""
@@ -427,9 +449,9 @@ class ChatSession:
                     await self.show_stored_data()
                     continue
                     
-                await self.process_query(query)
-                print("\n")
-                    
+                response_text = await self.process_query(query)
+                print(f"\nResponse: {response_text}")
+
             except KeyboardInterrupt:
                 print("\nExiting...")
                 break
@@ -450,8 +472,10 @@ class ChatSession:
             print("=" * 50)
 
             print("\nPricing Plans:")
-            # The result.content is a list with one item, a dict, where the 'text' key holds the rows
-            for plan in pricing.content[0]["text"]:
+            rows = ast.literal_eval(pricing.content[0].text)
+            #print("DEBUG rows: ")
+            #print(rows)
+            for plan in rows:
                 print(f"{plan['company_name']}: {plan['plan_name']} - Input Token ${plan['input_tokens']}, Output Tokens ${plan['output_tokens']}")
 
             print("=" * 50)
@@ -476,7 +500,7 @@ class ChatSession:
                 tools = await server.list_tools()
                 self.available_tools.extend(tools)
                 for tool in tools:
-                    self.tool_to_server[tool["name"]] = server.name
+                    self.tool_to_server[tool["name"]] = server
 
             print(f"\nConnected to {len(self.servers)} server(s)")
             print(f"Available tools: {[tool['name'] for tool in self.available_tools]}")
